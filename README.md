@@ -538,12 +538,6 @@ if real_result.numel() * rtol < err_num:
 
 $$
 Softplus(x) = \frac{1}{\beta} \left\{ \max(\beta x, 0) + \log\big(1 + e^{-|\beta x|}\big) \right\}
-
-$$
-
-$$
-
-
 $$
 
 ### 分段函数形式
