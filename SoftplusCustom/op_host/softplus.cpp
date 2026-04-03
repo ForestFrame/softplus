@@ -3,8 +3,8 @@
 #include "register/op_def_registry.h"
 #include "tiling/platform/platform_ascendc.h"
 
-#define BLOCK_SIZE 32 // 32字节block对齐
-#define BUFFER_NUM 2  // 乒乓操作缓冲buffer
+#define BLOCK_SIZE 32 // 32字节 block 对齐
+#define BUFFER_NUM 2  // 乒乓操作缓冲 buffer
 
 namespace optiling
 {
@@ -21,13 +21,13 @@ namespace optiling
         // printf("Core num: %d.\n", coreNum);
         // printf("UB size: %d.\n", (uint32_t)ub_size);
 
-        /* -------------------- 计算tiling参数 -------------------- */
+        /* -------------------- 计算 tiling 参数 -------------------- */
         auto data_type = context->GetInputDesc(0)->GetDataType();
         uint32_t sizeofdatatype = 0;
-        uint32_t ubPartNum = 0;      // 对单核的ub区进行分块，输入输出和中间缓存buff都要占ub空间，ubPartNum是分区块数
-        uint32_t alignNum = 0;       // 每个block对齐的数据元素数
-        uint32_t tilingBlockNum = 0; // 单核单次tiling可处理的数据块数
-        uint32_t tilingDataNum = 0;  // 单核单次tiling可处理的数据元素数
+        uint32_t ubPartNum = 0;      // 对单核的 ub 区进行分块，输入输出和中间缓存 buff 都要占 ub 空间，ubPartNum 是分区块数
+        uint32_t alignNum = 0;       // 每个 block 对齐的数据元素数
+        uint32_t tilingBlockNum = 0; // 单核单次 tiling 可处理的数据块数
+        uint32_t tilingDataNum = 0;  // 单核单次 tiling 可处理的数据元素数
 
         if (data_type == ge::DT_BF16)
         {
@@ -56,7 +56,7 @@ namespace optiling
         for (uint32_t i = 0; i < x1_shape->GetStorageShape().GetDimNum(); i++)
             totalDataNum *= x1_shape->GetStorageShape().GetDim(i);
         totalBytes = totalDataNum * sizeofdatatype;
-        totalBytes = (totalBytes + BLOCK_SIZE - 1) / BLOCK_SIZE * BLOCK_SIZE; // 向上取整到最近的BLOCK_SIZE的倍数
+        totalBytes = (totalBytes + BLOCK_SIZE - 1) / BLOCK_SIZE * BLOCK_SIZE; // 向上取整到最近的 BLOCK_SIZE 的倍数
         totalBlockNum = totalBytes / BLOCK_SIZE;                              // 总数据块数
         coreNum = (totalBlockNum > coreNum) ? coreNum : totalBlockNum;
         coreNum = (coreNum >= 1) ? coreNum : 1;
@@ -76,27 +76,27 @@ namespace optiling
         uint32_t smallCoreLoopNum = 0;
 
         // 大小核个数
-        bigCoreNum = totalBlockNum % coreNum;  // 总block数/核数，取余数
+        bigCoreNum = totalBlockNum % coreNum;  // 总 block 数/核数，取余数
         smallCoreNum = coreNum - bigCoreNum;
 
-        // 大小核处理总Block数
-        smallCoreBlockNum = totalBlockNum / coreNum;  // 总blcok/核数，平均每种（大/小）核处理的总block数，向下取整即小核处理的block数
+        // 每个大/小核处理总Block数
+        smallCoreBlockNum = totalBlockNum / coreNum;  // 总 blcok /核数，平均每个核处理的总 block 数，向下取整即小核处理的 block 数
         bigCoreBlockNum = smallCoreBlockNum + 1;
 
-        // 大小核处理总数据个数
-        bigCoreDataNum = bigCoreBlockNum * alignNum;  // block数*block对齐数据个数，即大/小核处理的总数据个数
+        // 每个大/小核处理总数据个数
+        bigCoreDataNum = bigCoreBlockNum * alignNum;  // 每个大核处理总 block 数* block 对齐数据个数，即每个大核处理的总数据个数
         smallCoreDataNum = smallCoreBlockNum * alignNum;
 
-        // 大小核最后一次处理的Block数
-        bigCoreTailBlockNum = bigCoreBlockNum % tilingBlockNum;  // 大核处理总block数%单核单次tiling可处理的block数，即大核处理处理的尾块数
+        // 每个大/小核最后一次处理的Block数
+        bigCoreTailBlockNum = bigCoreBlockNum % tilingBlockNum;  // 大核处理总 block 数%单核单次 tiling 可处理的 block 数，即大核处理处理的尾块数
         smallCoreTailBlockNum = smallCoreBlockNum % tilingBlockNum;
 
-        // 大小核最后一次处理的数据个数
+        // 每个大/小核最后一次处理的数据个数
         bigCoreTailDataNum = bigCoreTailBlockNum * alignNum;
         smallCoreTailDataNum = smallCoreTailBlockNum * alignNum;
 
-        // 大小核常规批次搬运次数，最后一次的搬运另算
-        bigCoreLoopNum = bigCoreBlockNum / tilingBlockNum;  // 大核处理总block数/单核单次tiling可处理的block数，向下取整即标准搬运次数，不包括尾块那一次
+        // 每个大/小核常规批次搬运次数，最后一次的搬运另算
+        bigCoreLoopNum = bigCoreBlockNum / tilingBlockNum;  // 大核处理总 block 数/单核单次 tiling 可处理的 block 数，向下取整即标准搬运次数，不包括尾块那一次
         smallCoreLoopNum = smallCoreBlockNum / tilingBlockNum;
 
         // printf("Total data num: %d.\n", totalDataNum);
@@ -121,7 +121,7 @@ namespace optiling
         // printf("Attr num: %zu.\n", attr_num);
         // printf("Attr beta: %f, threshold: %f.\n", beta, threshold);
 
-        /* -------------------- 设置tiling参数 -------------------- */
+        /* -------------------- 设置 tiling 参数 -------------------- */
         tiling.set_tilingDataNum(tilingDataNum);
 
         tiling.set_bigCoreNum(bigCoreNum);

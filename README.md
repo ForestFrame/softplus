@@ -27,7 +27,7 @@
 
 Softplus 是一种常见的神经网络激活函数，是 **ReLU 的平滑近似函数**。
 
-其计算公式为：
+其原始计算公式为：
 
 $$
 Softplus(x)=\frac{1}{\beta}\log(1+e^{\beta x})
@@ -44,19 +44,19 @@ $$
 ```markdown
 +----------------------+
 |   AclNNInvocation    |
-|  算子调用与测试程序     |
+|    AcendCL算子调用    |
 +----------+-----------+
            |
            v
 +----------------------+
 |    SoftplusCustom    |
-|  AscendC算子开发工程   |
+|  AscendC算子开发工程  |
 +----------+-----------+
            |
            v
 +----------------------+
 |       AI Core        |
-|   Kernel并行执行计算   |
+|   Kernel并行执行计算  |
 +----------------------+
 ```
 
@@ -312,17 +312,29 @@ core4 (小核) : [4] [4]
 ### 具体实现
 
 ```c++
-bigCoreNum = totalBlockNum % coreNum;
+// 大小核个数
+bigCoreNum = totalBlockNum % coreNum;  // 总block数/核数，取余数
 smallCoreNum = coreNum - bigCoreNum;
 
-smallCoreBlockNum = totalBlockNum / coreNum;
+// 每个大/小核处理总Block数
+smallCoreBlockNum = totalBlockNum / coreNum;  // 总blcok/核数，平均每个核处理的总block数，向下取整即小核处理的block数
 bigCoreBlockNum = smallCoreBlockNum + 1;
 
-bigCoreLoopNum = bigCoreBlockNum / tilingBlockNum;
-smallCoreLoopNum = smallCoreBlockNum / tilingBlockNum;
+// 每个大/小核处理总数据个数
+bigCoreDataNum = bigCoreBlockNum * alignNum;  // 每个大核处理总block数*block对齐数据个数，即每个大核处理的总数据个数
+smallCoreDataNum = smallCoreBlockNum * alignNum;
 
-bigCoreTailBlockNum = bigCoreBlockNum % tilingBlockNum;
+// 每个大/小核最后一次处理的Block数
+bigCoreTailBlockNum = bigCoreBlockNum % tilingBlockNum;  // 大核处理总block数%单核单次tiling可处理的block数，即大核处理处理的尾块数
 smallCoreTailBlockNum = smallCoreBlockNum % tilingBlockNum;
+
+// 每个大/小核最后一次处理的数据个数
+bigCoreTailDataNum = bigCoreTailBlockNum * alignNum;
+smallCoreTailDataNum = smallCoreTailBlockNum * alignNum;
+
+// 每个大/小核常规批次搬运次数，最后一次的搬运另算
+bigCoreLoopNum = bigCoreBlockNum / tilingBlockNum;  // 大核处理总block数/单核单次tiling可处理的block数，向下取整即标准搬运次数，不包括尾块那一次
+smallCoreLoopNum = smallCoreBlockNum / tilingBlockNum;
 ```
 
 # Kernel实现
@@ -333,11 +345,90 @@ Kernel 代码位于：
 SoftplusCustom/op_kernel/softplus.cpp
 ```
 
-Kernel 在 AI Core 上执行 Softplus 的逐元素计算。
+## Kernel侧地址定位
+
+在完成大小核工作量划分之后，还需要进一步确定**每个核从全局输入张量的哪个位置开始处理数据**。这一部分由 `globalBufferIndex`、`xGm` 以及 `progress * tilingDataNum` 共同决定。
+
+### 1. 每个核的基础地址偏移
+
+`globalBufferIndex` 表示**当前核在全局数据中的起始偏移量**，也就是当前核负责数据段的起点。
+
+对于大核：
+
+- 由于大核排在前面，且每个大核处理的数据量相同，因此它们的起始地址可以直接写成：
+
+```c++
+globalBufferIndex = bigCoreDataNum * coreIndex;
+```
+
+对于小核：
+
+- 小核排在大核之后
+- 如果仍然直接使用 `bigCoreDataNum * coreIndex`，就等价于“假设前面的所有核都是大核”
+- 但实际上，小核前面可能已经出现了一些同样是小核的核，而这些小核处理的数据量比大核更少
+- 因此需要把“多算出来的那一部分地址”减掉
+
+修正公式为：
+
+```c++
+globalBufferIndex -= (bigCoreDataNum - smallCoreDataNum) * (coreIndex - bigCoreNum);
+```
+
+其中：
+
+- `bigCoreDataNum - smallCoreDataNum` 表示每个小核相比大核少处理的数据量
+- `coreIndex - bigCoreNum` 表示当前小核之前已经出现了多少个小核
+
+因此，这个修正量表示的是：**前面这些小核一共比“大核假设”少处理了多少数据**。
+
+### 2. 每个核的基地址
+
+在得到 `globalBufferIndex` 之后，就可以基于原始输入地址 `x` 得到当前核自己的基地址：
+
+```c++
+xGm.SetGlobalBuffer((__gm__ DTYPE_X *)x + globalBufferIndex, this->coreDataNum);
+```
+
+这一步可以理解为：
+
+- `x` 是整块输入数据的起始地址
+- `x + globalBufferIndex` 是当前核负责数据段的起始地址
+- `xGm` 则表示“当前核自己的全局内存视图”
+
+同理，输出张量 `yGm` 也是按同样方式设置的。
+
+### 3. 每轮数据的地址偏移
+
+在 `CopyIn` 流程中，使用 `AscendC::DataCopy` 在 Global Memory 和 UB 之间搬运数据：
+
+```c++
+AscendC::DataCopy(xLocal, xGm[progress * this->tilingDataNum], dataNum);
+```
+
+这里的含义是：
+
+- `xGm` 已经指向当前核负责数据段的起点
+- `progress * tilingDataNum` 表示当前核内部第 `progress` 轮处理的数据偏移
+- `dataNum` 表示本轮实际搬运的数据量
+
+因此，当前轮次访问的实际地址可以理解为：
+
+```text
+实际地址 = x + globalBufferIndex + progress * tilingDataNum
+```
+
+需要注意的是：
+
+- `tilingDataNum` 表示正常轮次中每次搬运的数据量
+- `dataNum` 表示当前轮次真实搬运的数据量
+- 对于普通轮次，通常有 `dataNum = tilingDataNum`
+- 对于尾块轮次，`dataNum = tailDataNum`
+
+因此，`globalBufferIndex` 决定的是**当前核的整体起点**，而 `progress * tilingDataNum` 决定的是**当前核内部第几轮处理的数据位置**。两者结合起来，才能确定每一轮实际访问的全局内存地址。
 
 ---
 
-# Pipeline 执行流程
+## Pipeline 执行流程
 
 算子的执行流程采用 **三阶段流水线结构**：
 
@@ -357,7 +448,7 @@ CopyOut  : 将结果写回 Global Memory
 
 ---
 
-# Double Buffer 机制
+## Double Buffer 机制
 
 为了进一步提高算子的执行效率，在实现中采用 **Double Buffer（双缓冲）机制**。
 
@@ -382,6 +473,117 @@ Buffer B : 预取下一块数据
 ```
 
 该机制可以有效 **隐藏 Global Memory 访问延迟**，提高算子整体吞吐率。
+
+---
+
+## 算子的三种实现方式
+
+### 原始公式
+
+$$
+Softplus(x)=\frac{1}{\beta}\log(1+e^{\beta x})
+$$
+
+这是 Softplus 最直接的数学表达式，实现思路也非常清晰：
+
+1. 计算 $\beta x$
+2. 计算指数 $e^{\beta x}$
+3. 计算 $1 + e^{\beta x}$
+4. 取对数 $\log(1 + e^{\beta x})$
+5. 乘以 $\frac{1}{\beta}$ 得到最终结果
+
+这种实现方式的优点在于：
+
+- 与理论公式完全一致，直观易懂
+- 代码实现简单，适合作为算子开发的初版进行功能验证
+
+#### 潜在问题
+
+尽管实现简单，但原始公式存在明显的数值风险：
+
+- 当 $x$ 较大时，$e^{\beta x}$ 增长迅速，容易导致溢出
+- 对于输入范围宽、数据规模大的情况，精度和稳定性可能受影响
+
+#### 比赛经历与验证
+
+在比赛中，我最初提交的版本仍采用了原始公式。提交后官方反馈如下：
+
+> 作品泛化性不足，未对 threshold 做任何处理，较为明显地针对用例答题，因此成绩被判为无效。
+
+实际上，我在比赛中完成了三种算子的实现，但在提交阶段发现原始公式在当时样例下能够通过验证，因此误以为该实现方式可接受。
+
+官方测试脚本 `AclNNInvocation/scripts/test_op.py` 的校验逻辑并非严格逐元素匹配，而是采用带误差容忍的方式：
+
+- float32 类型使用 rtol = 1e-4、atol = 1e-4
+- 低精度类型使用 rtol = 1e-3、atol = 1e-3
+- 除了允许单点误差外，还允许一定比例的数据点不满足误差条件
+
+核心判断逻辑如下：
+
+```python
+if real_result.numel() * rtol < err_num:
+    print(f"[ERROR] result error")
+    return False
+```
+
+这意味着即使原始公式在数值上存在一定不稳定性，也可能在部分样例上通过验证。
+
+#### 总结
+
+- 原始公式适合功能验证和初期实现，但缺乏泛化能力
+- 没有对 threshold 分段处理的版本，在输入范围扩大或边界条件变化时容易出错
+- 比赛中未获奖的主要原因正是泛化性不足，而不仅仅是“样例通过与否”
+
+### 数值稳定公式
+
+$$
+Softplus(x)=\frac{1}{\beta}\left\{ max(\beta x,0)+log(1+e^{-\left| \beta x \right|}) \right\}
+$$
+
+### 分段函数形式
+
+$$
+\text{Softplus}(x) =
+\begin{cases} 
+x, & x > \text{threshold} \\
+\frac{1}{\beta} \log(1 + e^{\beta x}), & -\text{threshold} \le x \le \text{threshold} \\
+\frac{1}{\beta} e^{\beta x}, & x < -\text{threshold}
+\end{cases}
+$$
+
+#### `compare + select` 机制实现分段函数
+
+在 kernel 端实现分段函数时，逐元素使用 `if` 判断效率非常低。为此，我们采用 `compare + select` 的机制，将分段逻辑并行化：
+
+1. `Compare`
+    使用 `AscendC::CompareScalar` 对输入向量与阈值 `threshold` 并行比较，生成布尔掩码 `mask`：
+
+    ```c++
+    AscendC::CompareScalar(mask, temp2, threshold, AscendC::CMPMODE::GT, dataNum);
+    ```
+
+    其中 `mask[i]` 为 `true` 表示该元素大于阈值，应选取对应分段的输出。
+
+2. 计算各分段函数值
+    对所有元素并行计算 Softplus 的公式部分：
+
+    ```c++
+    AscendC::Exp(temp2, temp2, dataNum);                 // e^(beta*x)
+    AscendC::Adds(temp2, temp2, scalar, dataNum);        // 1 + e^(beta*x)
+    AscendC::Ln(temp2, temp2, dataNum);                  // log(1 + e^(beta*x))
+    AscendC::Muls(temp2, temp2, 1.0f / beta, dataNum);   // (1/beta) * log(1 + e^(beta*x))
+    ```
+
+3. Select
+    根据掩码 `mask` 选择对应分段输出，完成分段逻辑：
+
+    ```c++
+    AscendC::Select(temp1, mask, temp1, temp2, AscendC::SELMODE::VSEL_TENSOR_TENSOR_MODE, dataNum);
+    ```
+
+   - `temp1` 中存放大于阈值的原始值
+   - `temp2` 中存放公式计算的 Softplus 值
+   - `mask` 指示哪些元素选 `temp1`，哪些选 `temp2`
 
 ---
 

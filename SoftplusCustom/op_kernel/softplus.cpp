@@ -2,7 +2,7 @@
 
 using namespace AscendC;
 
-#define BUFFER_NUM 2 // 乒乓操作缓冲buffer
+#define BUFFER_NUM 2  // 乒乓操作缓冲 buffer
 #define DEBUG_ENABLE 1
 
 class KernelSoftplus
@@ -46,7 +46,7 @@ public:
         this->beta = beta;
         this->threshold = threshold;
 
-        xGm.SetGlobalBuffer((__gm__ DTYPE_X *)x + globalBufferIndex, this->coreDataNum);  // 计算每个核的第0轮数据处理的基础地址偏移
+        xGm.SetGlobalBuffer((__gm__ DTYPE_X *)x + globalBufferIndex, this->coreDataNum);  // 计算每个核的第 0 轮数据处理的基础地址偏移
         yGm.SetGlobalBuffer((__gm__ DTYPE_Y *)y + globalBufferIndex, this->coreDataNum);
         pipe.InitBuffer(inQueueX, BUFFER_NUM, this->tilingDataNum * sizeof(DTYPE_X));
         pipe.InitBuffer(outQueueY, BUFFER_NUM, this->tilingDataNum * sizeof(DTYPE_Y));
@@ -73,7 +73,9 @@ private:
     __aicore__ inline void CopyIn(int32_t progress, uint32_t dataNum)
     {
         AscendC::LocalTensor<DTYPE_X> xLocal = inQueueX.AllocTensor<DTYPE_X>();
-        AscendC::DataCopy(xLocal, xGm[progress * this->tilingDataNum], dataNum);  // 
+        // xGm 已经指向当前核负责数据段的起始地址，这里再通过 progress * tilingDataNum
+        // 定位到当前核第 progress 轮要处理的 tile 起点，并搬运 dataNum 个元素到 UB。
+        AscendC::DataCopy(xLocal, xGm[progress * this->tilingDataNum], dataNum);
         inQueueX.EnQue(xLocal);
     }
 
@@ -124,7 +126,7 @@ private:
     AscendC::GlobalTensor<DTYPE_X> xGm;
     AscendC::GlobalTensor<DTYPE_Y> yGm;
 
-    uint32_t tilingDataNum; // 单核单次tiling可处理的数据元素数
+    uint32_t tilingDataNum; // 单核单次 tiling 可处理的数据元素数
     uint32_t coreDataNum;   // 该核需要处理的总数居元素数
     uint32_t loopNum;       // 该核需要处理的循环次数，不包括最后一个尾处理
     uint32_t tailDataNum;   // 该核需要处理的尾数据元素数
