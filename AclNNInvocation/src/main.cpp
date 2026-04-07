@@ -61,7 +61,7 @@ OperatorDesc CreateOpDesc() {
         dtype.pop_back();
     }
 
-    aclDataType dataType;
+    aclDataType dataType;  // 把从文件读入的 dtype 映射到 ACL 的 aclDataType
     if (dtype == "torch.int8") {
         dataType = ACL_INT8;
     } else if (dtype == "torch.int32") {
@@ -83,7 +83,7 @@ OperatorDesc CreateOpDesc() {
     }
 
     // 3. create desc
-    OperatorDesc opDesc;
+    OperatorDesc opDesc;  // “算子规格说明书”，把算子的信息装入对象 opDesc
     opDesc.beta = read_para("../input/beta.bin");
     opDesc.threshold = read_para("../input/threshold.bin");
 
@@ -96,6 +96,7 @@ OperatorDesc CreateOpDesc() {
     return opDesc;
 }
 
+// 把文件内容读到 runner 的输入 host buffer
 bool SetInputData(OpRunner &runner)
 {
     size_t fileSize = 0;
@@ -104,6 +105,7 @@ bool SetInputData(OpRunner &runner)
     return true;
 }
 
+// 把 runner 的输出 host buffer 写到文件
 bool ProcessOutputData(OpRunner &runner)
 {
     WriteFile("../output/output.bin", runner.GetOutputBuffer<void>(0), runner.GetOutputSize(0));
@@ -174,28 +176,34 @@ bool InitResource()
 bool RunOp()
 {
     // create op desc
+    // 把 dtype,shape,para 整理成算子描述
     OperatorDesc opDesc = CreateOpDesc();
 
     // create Runner
+    // 创建执行器
     OpRunner opRunner(&opDesc);
+    // 给输入输出分配内存，创建张量对象
     if (!opRunner.Init()) {
         ERROR_LOG("Init OpRunner failed");
         return false;
     }
 
     // Load inputs
+    // 给输入文件分配内存，创建张量对象
     if (!SetInputData(opRunner)) {
         ERROR_LOG("Set input data failed");
         return false;
     }
     
     // Run op
+    // 核心部分。调用aclnn
     if (!opRunner.RunOp()) {
         ERROR_LOG("Run op failed");
         return false;
     }
 
     // process output data
+    // 把输出写入文件
     if (!ProcessOutputData(opRunner)) {
         ERROR_LOG("Process output data failed");
         return false;
@@ -207,17 +215,20 @@ bool RunOp()
 
 int main(int argc, char **argv)
 {
+    // 准备 ACL 运行环境
     if (!InitResource()) {
         ERROR_LOG("Init resource failed");
         return FAILED;
     }
     INFO_LOG("Init resource success");
 
+    // 执行算子
     if (!RunOp()) {
         DestoryResource();
         return FAILED;
     }
 
+    // 释放资源
     DestoryResource();
 
     return SUCCESS;

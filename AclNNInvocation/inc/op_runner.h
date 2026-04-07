@@ -168,9 +168,11 @@ private:
     std::vector<aclDataBuffer *> inputBuffers_;
     std::vector<aclDataBuffer *> outputBuffers_;
 
+    // Device 侧内存，真正给 NPU 执行时用
     std::vector<void *> devInputs_;
     std::vector<void *> devOutputs_;
 
+    // Host 侧内存，程序在 CPU 这边读写文件时主要接触它们
     std::vector<void *> hostInputs_;
     std::vector<void *> hostOutputs_;
 

@@ -26,6 +26,7 @@ OperatorDesc::~OperatorDesc()
 
 }
 
+// 把 shape、dtype、format 变成 ACL 能识别的 aclTensorDesc
 OperatorDesc &OperatorDesc::AddInputTensorDesc(aclDataType dataType,
                                                int numDims,
                                                const int64_t *dims,
